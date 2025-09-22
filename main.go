@@ -4,7 +4,8 @@ import (
 	"log"
 	"net/http"
 
-	"civicsync-be/config" 
+	"civicsync-be/config"
+	"civicsync-be/routes"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -23,6 +24,8 @@ func main() {
 
 	r := gin.Default()
 
+	routes.UserRoutes(r)
+	
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
@@ -31,4 +34,3 @@ func main() {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
-
