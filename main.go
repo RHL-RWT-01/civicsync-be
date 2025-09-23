@@ -24,8 +24,8 @@ func main() {
 
 	r := gin.Default()
 
-	routes.UserRoutes(r)
-	
+	routes.AuthRoutes(r)
+
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
