@@ -5,7 +5,7 @@ import (
 	"civicsync-be/middlewares"
 	"github.com/gin-gonic/gin"
 )
-
+// AuthRoutes sets up the authentication routes
 func AuthRoutes(r *gin.Engine) {
 	auth := r.Group("/api/auth")
 	{

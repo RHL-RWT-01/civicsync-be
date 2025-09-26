@@ -8,6 +8,7 @@ import (
 	"github.com/dgrijalva/jwt-go"
 )
 
+// GenerateAndSetToken generates a JWT token for a given user ID
 func GenerateAndSetToken(userID string) (string, error) {
 	secretStr := os.Getenv("JWT_SECRET")
 	if secretStr == "" {

@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 )
-
+// AuthMiddleware validates JWT tokens and protects routes
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.Request.Header.Get("Authorization")
