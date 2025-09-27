@@ -26,6 +26,7 @@ const (
 	Resolved   IssueStatus = "Resolved"
 )
 
+// Issue represents a civic issue reported by a user
 type Issue struct {
 	ID          primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	Title       string             `bson:"title" json:"title"`

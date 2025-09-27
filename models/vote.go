@@ -10,7 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// Vote struct = equivalent to Mongoose schema
+// Vote represents a user's vote on an issue
 type Vote struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	Issue     primitive.ObjectID `bson:"issue" json:"issue"`

@@ -7,6 +7,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// User represents a user in the system
 type User struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	Name      string             `bson:"name" json:"name"`
@@ -16,6 +17,7 @@ type User struct {
 	UpdatedAt time.Time          `bson:"updatedAt" json:"updatedAt"`
 }
 
+// HashPassword hashes the user's password before storing it
 func (u *User) HashPassword() error {
 	hashed, err := bcrypt.GenerateFromPassword([]byte(u.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -25,6 +27,7 @@ func (u *User) HashPassword() error {
 	return nil
 }
 
+// ComparePassword compares the provided password with the stored hashed password
 func (u *User) ComparePassword(candidate string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(candidate))
 	return err == nil

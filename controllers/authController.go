@@ -1,4 +1,4 @@
-package authController
+package controllers
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
+// RegisterUser handles user registration
 func RegisterUser(c *gin.Context) {
 	var input struct {
 		Name     string `json:"name" binding:"required,max=50"`
@@ -71,6 +72,7 @@ func RegisterUser(c *gin.Context) {
 	})
 }
 
+// LoginUser handles user login
 func LoginUser(c *gin.Context) {
 	var input struct {
 		Email    string `json:"email" binding:"required,email"`
@@ -115,7 +117,7 @@ func LoginUser(c *gin.Context) {
 		},
 	})
 }
-
+// GetMe retrieves the authenticated user's information
 func GetMe(c *gin.Context) {
 	userID, exists := c.Get("user_id")
 	if !exists {

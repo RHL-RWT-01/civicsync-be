@@ -17,6 +17,8 @@ var (
 	once   sync.Once
 )
 
+
+// ConnectDB initializes and returns a MongoDB database connection
 func ConnectDB() *mongo.Database {
 	once.Do(func() {
 		mongoURI := os.Getenv("MONGODB_URI")
@@ -46,6 +48,7 @@ func ConnectDB() *mongo.Database {
 	return db
 }
 
+// GetCollection returns a MongoDB collection by name
 func GetCollection(name string) *mongo.Collection {
 	return ConnectDB().Collection(name)
 }
