@@ -1,4 +1,4 @@
-package authController
+package controllers
 
 import (
 	"context"
