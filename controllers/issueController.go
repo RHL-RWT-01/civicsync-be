@@ -325,3 +325,317 @@ func GetIssue(c *gin.Context) {
 
 	c.JSON(http.StatusOK, response)
 }
+
+// GetIssuesByUser retrieves all issues created by a specific user
+func GetIssuesByUser(c *gin.Context) {
+	userIdParam := c.Param("userId")
+	userID, err := primitive.ObjectIDFromHex(userIdParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Find issues created by the specified user
+	cursor, err := issueCollection.Find(ctx, bson.M{"createdBy": userID})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve issues"})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var issues []models.Issue
+	if err := cursor.All(ctx, &issues); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode issues"})
+		return
+	}
+
+	// Enhance issues with vote counts and user vote status
+	type IssueWithVotes struct {
+		models.Issue
+		Votes        int64                  `json:"votes"`
+		UserHasVoted bool                   `json:"userHasVoted"`
+		CreatedBy    map[string]interface{} `json:"createdBy"`
+	}
+
+	issuesWithVotes := make([]IssueWithVotes, 0, len(issues))
+
+	c.JSON(http.StatusOK, issuesWithVotes)
+}
+
+// UpdateIssue allows the creator of an issue to update its details
+func UpdateIssue(c *gin.Context) {
+	idParam := c.Param("id")
+	issueID, err := primitive.ObjectIDFromHex(idParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid issue ID"})
+		return
+	}
+
+	// Extract user ID from context (set by auth middleware)
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// Convert user ID to ObjectID
+	userObjID, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	var input struct {
+		Title       *string  `json:"title,omitempty"`
+		Description *string  `json:"description,omitempty"`
+		Category    *string  `json:"category,omitempty"`
+		Location    *string  `json:"location,omitempty"`
+		ImageURL    *string  `json:"imageUrl,omitempty"`
+		Status      *string  `json:"status,omitempty"`
+		Latitude    *float64 `json:"latitude,omitempty"`
+		Longitude   *float64 `json:"longitude,omitempty"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Check if the issue exists and is created by the requesting user
+	var issue models.Issue
+	err = issueCollection.FindOne(ctx, bson.M{"_id": issueID}).Decode(&issue)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Issue not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve issue"})
+		}
+		return
+	}
+
+	if issue.CreatedBy != userObjID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to update this issue"})
+		return
+	}
+
+	// Build update document
+	update := bson.M{"updatedAt": time.Now()}
+	if input.Title != nil {
+		update["title"] = *input.Title
+	}
+	if input.Description != nil {
+		update["description"] = *input.Description
+	}
+	if input.Category != nil {
+		validCategories := map[string]bool{
+			"Road": true, "Water": true, "Sanitation": true,
+			"Electricity": true, "Other": true,
+		}
+		if !validCategories[*input.Category] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid category"})
+			return
+		}
+		update["category"] = *input.Category
+	}
+	if input.Location != nil {
+		update["location"] = *input.Location
+	}
+	if input.ImageURL != nil {
+		update["imageUrl"] = input.ImageURL
+	}
+	if input.Status != nil {
+		switch *input.Status {
+		case "Pending", "In Progress", "Resolved":
+			update["status"] = *input.Status
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status"})
+			return
+		}
+	}
+	if input.Latitude != nil {
+		update["latitude"] = *input.Latitude
+	}
+	if input.Longitude != nil {
+		update["longitude"] = *input.Longitude
+	}
+
+	// Update the issue in the database
+	_, err = issueCollection.UpdateOne(ctx, bson.M{"_id": issueID}, bson.M{"$set": update})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update issue"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Issue updated successfully"})
+}
+
+// DeleteIssue allows the creator of an issue to delete it
+func DeleteIssue(c *gin.Context) {
+	idParam := c.Param("id")
+	issueID, err := primitive.ObjectIDFromHex(idParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid issue ID"})
+		return
+	}
+
+	// Extract user ID from context (set by auth middleware)
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// Convert user ID to ObjectID
+	userObjID, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Check if the issue exists and is created by the requesting user
+	var issue models.Issue
+	err = issueCollection.FindOne(ctx, bson.M{"_id": issueID}).Decode(&issue)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Issue not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve issue"})
+		}
+		return
+	}
+
+	if issue.CreatedBy != userObjID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to delete this issue"})
+		return
+	}
+
+	// Delete the issue from the database
+	_, err = issueCollection.DeleteOne(ctx, bson.M{"_id": issueID})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete issue"})
+		return
+	}
+
+	// Delete associated votes
+	_, _ = voteCollection.DeleteMany(ctx, bson.M{"issue": issueID})
+
+	c.JSON(http.StatusOK, gin.H{"message": "Issue deleted successfully"})
+}
+
+// voteOnIssue allows a user to vote on an issue
+func VoteOnIssue(c *gin.Context) {
+	idParam := c.Param("id")
+	issueID, err := primitive.ObjectIDFromHex(idParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid issue ID"})
+		return
+	}
+
+	// Extract user ID from context (set by auth middleware)
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// Convert user ID to ObjectID
+	userObjID, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Check if the issue exists
+	var issue models.Issue
+	err = issueCollection.FindOne(ctx, bson.M{"_id": issueID}).Decode(&issue)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Issue not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve issue"})
+		}
+		return
+	}
+
+	// Check if the user has already voted on this issue
+	count, err := voteCollection.CountDocuments(ctx, bson.M{
+		"issue": issueID,
+		"user":  userObjID,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check existing votes"})
+		return
+	}
+	if count > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "User has already voted on this issue"})
+		return
+	}
+
+	// Create a new vote
+	vote := models.Vote{
+		ID:        primitive.NewObjectID(),
+		Issue:     issueID,
+		User:      userObjID,
+		CreatedAt: time.Now(),
+	}
+
+	// Insert the vote into the database
+	_, err = voteCollection.InsertOne(ctx, vote)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to cast vote"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Vote cast successfully"})
+}
+
+// UnvoteOnIssue allows a user to remove their vote from an issue
+func UnvoteOnIssue(c *gin.Context) {
+	idParam := c.Param("id")
+	issueID, err := primitive.ObjectIDFromHex(idParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid issue ID"})
+		return
+	}
+
+	// Extract user ID from context (set by auth middleware)
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// Convert user ID to ObjectID
+	userObjID, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Delete the vote from the database
+	_, err = voteCollection.DeleteOne(ctx, bson.M{
+		"issue": issueID,
+		"user":  userObjID,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove vote"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Vote removed successfully"})
+}
