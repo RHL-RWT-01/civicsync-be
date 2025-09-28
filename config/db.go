@@ -42,7 +42,7 @@ func ConnectDB() *mongo.Database {
 		log.Println("Connected to MongoDB!")
 
 		client = c
-		db = client.Database("mydb")
+		db = client.Database("CivicSync")
 	})
 
 	return db

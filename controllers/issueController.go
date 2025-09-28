@@ -145,7 +145,7 @@ func GetAllIssues(c *gin.Context) {
 	skip := (page - 1) * limit
 
 	// Sort options
-	sortOptions := bson.D{}
+	var sortOptions bson.D
 	switch sort {
 	case "oldest":
 		sortOptions = bson.D{{Key: "createdAt", Value: 1}}
