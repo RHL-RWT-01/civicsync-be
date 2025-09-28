@@ -25,7 +25,7 @@ func main() {
 	r := gin.Default()
 
 	routes.AuthRoutes(r)
-
+	routes.IssueRoutes(r)
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
