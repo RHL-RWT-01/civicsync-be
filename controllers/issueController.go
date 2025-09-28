@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"time"
 
 	"civicsync-be/config"
@@ -12,26 +13,87 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 var issueCollection *mongo.Collection = config.GetCollection("issues")
+var voteCollection *mongo.Collection = config.GetCollection("votes")
+var userCollection *mongo.Collection = config.GetCollection("users")
 
 // CreateIssue handles the creation of a new issue
 func CreateIssue(c *gin.Context) {
-	var issue models.Issue
-	if err := c.ShouldBindJSON(&issue); err != nil {
+	// Extract user ID from context (set by auth middleware)
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// Convert user ID to ObjectID
+	createdByID, err := primitive.ObjectIDFromHex(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	var input struct {
+		Title       string   `json:"title" binding:"required,max=200"`
+		Description string   `json:"description" binding:"required,max=1000"`
+		Category    string   `json:"category" binding:"required"`
+		Location    string   `json:"location" binding:"required,max=200"`
+		ImageURL    *string  `json:"imageUrl,omitempty"`
+		Status      *string  `json:"status,omitempty"`
+		Latitude    *float64 `json:"latitude,omitempty"`
+		Longitude   *float64 `json:"longitude,omitempty"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	issue.ID = primitive.NewObjectID()
-	issue.CreatedAt = time.Now()
-	issue.UpdatedAt = time.Now()
+	// Validate category
+	validCategories := map[string]bool{
+		"Road": true, "Water": true, "Sanitation": true,
+		"Electricity": true, "Other": true,
+	}
+	if !validCategories[input.Category] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid category"})
+		return
+	}
+
+	// Set default status if not provided
+	status := models.Pending
+	if input.Status != nil {
+		switch *input.Status {
+		case "Pending", "In Progress", "Resolved":
+			status = models.IssueStatus(*input.Status)
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status"})
+			return
+		}
+	}
+
+	// Create the issue
+	issue := models.Issue{
+		ID:          primitive.NewObjectID(),
+		Title:       input.Title,
+		Description: input.Description,
+		Category:    models.IssueCategory(input.Category),
+		Location:    input.Location,
+		ImageURL:    input.ImageURL,
+		Status:      status,
+		CreatedBy:   createdByID,
+		Latitude:    input.Latitude,
+		Longitude:   input.Longitude,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := issueCollection.InsertOne(ctx, issue)
+	_, err = issueCollection.InsertOne(ctx, issue)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create issue"})
 		return
@@ -40,7 +102,156 @@ func CreateIssue(c *gin.Context) {
 	c.JSON(http.StatusCreated, issue)
 }
 
-// GetIssue retrieves an issue by its ID
+// GetAllIssues handles retrieving all issues with filtering, pagination, and vote counts
+func GetAllIssues(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Parse query parameters
+	category := c.Query("category")
+	status := c.Query("status")
+	search := c.Query("search")
+	sort := c.DefaultQuery("sort", "newest")
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 10
+	}
+
+	// Build query filter
+	filter := bson.M{}
+
+	if category != "" && category != "all" {
+		filter["category"] = category
+	}
+
+	if status != "" && status != "all" {
+		filter["status"] = status
+	}
+
+	if search != "" {
+		filter["$or"] = []bson.M{
+			{"title": bson.M{"$regex": search, "$options": "i"}},
+			{"description": bson.M{"$regex": search, "$options": "i"}},
+		}
+	}
+
+	// Calculate pagination
+	skip := (page - 1) * limit
+
+	// Sort options
+	sortOptions := bson.D{}
+	switch sort {
+	case "oldest":
+		sortOptions = bson.D{{Key: "createdAt", Value: 1}}
+	case "newest":
+		fallthrough
+	default:
+		sortOptions = bson.D{{Key: "createdAt", Value: -1}}
+	}
+
+	// Get total count for pagination
+	totalCount, err := issueCollection.CountDocuments(ctx, filter)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count issues"})
+		return
+	}
+
+	// Find issues with pagination and sorting
+	findOptions := options.Find().
+		SetSort(sortOptions).
+		SetSkip(int64(skip)).
+		SetLimit(int64(limit))
+
+	cursor, err := issueCollection.Find(ctx, filter, findOptions)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve issues"})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var issues []models.Issue
+	if err := cursor.All(ctx, &issues); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode issues"})
+		return
+	}
+
+	// Get current user ID for vote checking (if authenticated)
+	var currentUserID *primitive.ObjectID
+	if userIDStr, exists := c.Get("user_id"); exists {
+		if objID, err := primitive.ObjectIDFromHex(userIDStr.(string)); err == nil {
+			currentUserID = &objID
+		}
+	}
+
+	// Enhance issues with vote counts and user vote status
+	type IssueWithVotes struct {
+		models.Issue
+		Votes        int64                  `json:"votes"`
+		UserHasVoted bool                   `json:"userHasVoted"`
+		CreatedBy    map[string]interface{} `json:"createdBy"`
+	}
+
+	issuesWithVotes := make([]IssueWithVotes, 0, len(issues))
+
+	for _, issue := range issues {
+		// Count votes for this issue
+		voteCount, err := voteCollection.CountDocuments(ctx, bson.M{"issue": issue.ID})
+		if err != nil {
+			voteCount = 0
+		}
+
+		// Check if current user has voted
+		userHasVoted := false
+		if currentUserID != nil {
+			count, err := voteCollection.CountDocuments(ctx, bson.M{
+				"issue": issue.ID,
+				"user":  *currentUserID,
+			})
+			if err == nil && count > 0 {
+				userHasVoted = true
+			}
+		}
+
+		// Get creator info
+		var creator models.User
+		createdByMap := map[string]interface{}{
+			"id": issue.CreatedBy,
+		}
+
+		if err := userCollection.FindOne(ctx, bson.M{"_id": issue.CreatedBy}).Decode(&creator); err == nil {
+			createdByMap["name"] = creator.Name
+			createdByMap["email"] = creator.Email
+		}
+
+		issueWithVotes := IssueWithVotes{
+			Issue:        issue,
+			Votes:        voteCount,
+			UserHasVoted: userHasVoted,
+			CreatedBy:    createdByMap,
+		}
+
+		issuesWithVotes = append(issuesWithVotes, issueWithVotes)
+	}
+
+	// Calculate pagination info
+	totalPages := int((totalCount + int64(limit) - 1) / int64(limit))
+
+	response := gin.H{
+		"issues":      issuesWithVotes,
+		"totalIssues": totalCount,
+		"totalPages":  totalPages,
+		"currentPage": page,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// GetIssue retrieves an issue by its ID with vote information
 func GetIssue(c *gin.Context) {
 	idParam := c.Param("id")
 	issueID, err := primitive.ObjectIDFromHex(idParam)
@@ -49,10 +260,10 @@ func GetIssue(c *gin.Context) {
 		return
 	}
 
-	var issue models.Issue
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	var issue models.Issue
 	err = issueCollection.FindOne(ctx, bson.M{"_id": issueID}).Decode(&issue)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
@@ -63,72 +274,54 @@ func GetIssue(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, issue)
-}
-
-// UpdateIssue updates an existing issue by its ID
-func UpdateIssue(c *gin.Context) {
-	idParam := c.Param("id")
-	issueID, err := primitive.ObjectIDFromHex(idParam)
+	// Count votes for this issue
+	voteCount, err := voteCollection.CountDocuments(ctx, bson.M{"issue": issueID})
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid issue ID"})
-		return
+		voteCount = 0
 	}
 
-	var issue models.Issue
-	if err := c.ShouldBindJSON(&issue); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+	// Check if current user has voted (if authenticated)
+	userHasVoted := false
+	if userIDStr, exists := c.Get("user_id"); exists {
+		if currentUserID, err := primitive.ObjectIDFromHex(userIDStr.(string)); err == nil {
+			count, err := voteCollection.CountDocuments(ctx, bson.M{
+				"issue": issueID,
+				"user":  currentUserID,
+			})
+			if err == nil && count > 0 {
+				userHasVoted = true
+			}
+		}
 	}
 
-	issue.UpdatedAt = time.Now()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	update := bson.M{
-		"$set": bson.M{
-			"title":       issue.Title,
-			"description": issue.Description,
-			"status":      issue.Status,
-			"updatedAt":   issue.UpdatedAt,
-		},
+	// Get creator info
+	var creator models.User
+	createdByMap := map[string]interface{}{
+		"id": issue.CreatedBy,
 	}
 
-	result, err := issueCollection.UpdateOne(ctx, bson.M{"_id": issueID}, update)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update issue"})
-		return
-	}
-	if result.MatchedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Issue not found"})
-		return
+	if err := userCollection.FindOne(ctx, bson.M{"_id": issue.CreatedBy}).Decode(&creator); err == nil {
+		createdByMap["name"] = creator.Name
+		createdByMap["email"] = creator.Email
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Issue updated successfully"})
-}
-
-// DeleteIssue deletes an issue by its ID
-func DeleteIssue(c *gin.Context) {
-	idParam := c.Param("id")
-	issueID, err := primitive.ObjectIDFromHex(idParam)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid issue ID"})
-		return
+	// Create response with vote information
+	response := gin.H{
+		"id":           issue.ID,
+		"title":        issue.Title,
+		"description":  issue.Description,
+		"category":     issue.Category,
+		"location":     issue.Location,
+		"imageUrl":     issue.ImageURL,
+		"status":       issue.Status,
+		"createdBy":    createdByMap,
+		"latitude":     issue.Latitude,
+		"longitude":    issue.Longitude,
+		"createdAt":    issue.CreatedAt,
+		"updatedAt":    issue.UpdatedAt,
+		"votes":        voteCount,
+		"userHasVoted": userHasVoted,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	result, err := issueCollection.DeleteOne(ctx, bson.M{"_id": issueID})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete issue"})
-		return
-	}
-	if result.DeletedCount == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Issue not found"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Issue deleted successfully"})
+	c.JSON(http.StatusOK, response)
 }
