@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -638,4 +639,180 @@ func UnvoteOnIssue(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Vote removed successfully"})
+}
+
+// GetIssueAnalytics returns analytical data about issues
+func GetIssueAnalytics(c *gin.Context) {
+	// Extract user ID from context (authentication required)
+	_, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Get issues by category using aggregation
+	categoryPipeline := []bson.M{
+		{
+			"$group": bson.M{
+				"_id":   "$category",
+				"count": bson.M{"$sum": 1},
+			},
+		},
+		{
+			"$project": bson.M{
+				"name":  "$_id",
+				"value": "$count",
+				"_id":   0,
+			},
+		},
+	}
+
+	categoryCursor, err := issueCollection.Aggregate(ctx, categoryPipeline)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get category analytics"})
+		return
+	}
+	defer categoryCursor.Close(ctx)
+
+	var issuesByCategory []bson.M
+	if err := categoryCursor.All(ctx, &issuesByCategory); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode category analytics"})
+		return
+	}
+
+	// Get last 7 days data
+	var last7Days []gin.H
+	for i := 6; i >= 0; i-- {
+		date := time.Now().AddDate(0, 0, -i)
+		date = time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
+
+		nextDate := date.AddDate(0, 0, 1)
+
+		count, err := issueCollection.CountDocuments(ctx, bson.M{
+			"createdAt": bson.M{
+				"$gte": date,
+				"$lt":  nextDate,
+			},
+		})
+		if err != nil {
+			count = 0
+		}
+
+		last7Days = append(last7Days, gin.H{
+			"date":  date.Format("2006-01-02"),
+			"count": count,
+		})
+	}
+
+	// Get top voted issues
+	// First get recent issues (last 50)
+	findOptions := options.Find().
+		SetSort(bson.D{{Key: "createdAt", Value: -1}}).
+		SetLimit(50)
+
+	cursor, err := issueCollection.Find(ctx, bson.M{}, findOptions)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve issues for vote analysis"})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var issues []models.Issue
+	if err := cursor.All(ctx, &issues); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode issues"})
+		return
+	}
+
+	// Get vote counts for each issue
+	type IssueWithVoteCount struct {
+		ID       primitive.ObjectID `json:"id"`
+		Title    string             `json:"title"`
+		Category string             `json:"category"`
+		Votes    int64              `json:"votes"`
+	}
+
+	var issuesWithVotes []IssueWithVoteCount
+	for _, issue := range issues {
+		voteCount, err := voteCollection.CountDocuments(ctx, bson.M{"issue": issue.ID})
+		if err != nil {
+			voteCount = 0
+		}
+
+		issuesWithVotes = append(issuesWithVotes, IssueWithVoteCount{
+			ID:       issue.ID,
+			Title:    issue.Title,
+			Category: string(issue.Category),
+			Votes:    voteCount,
+		})
+	}
+
+	// Sort by votes (descending) using sort.Slice
+	sort.Slice(issuesWithVotes, func(i, j int) bool {
+		return issuesWithVotes[i].Votes > issuesWithVotes[j].Votes
+	})
+
+	// Take top 5
+	topVotedIssues := issuesWithVotes
+	if len(issuesWithVotes) > 5 {
+		topVotedIssues = issuesWithVotes[:5]
+	}
+
+	// Get total counts
+	totalIssues, err := issueCollection.CountDocuments(ctx, bson.M{})
+	if err != nil {
+		totalIssues = 0
+	}
+
+	totalVotes, err := voteCollection.CountDocuments(ctx, bson.M{})
+	if err != nil {
+		totalVotes = 0
+	}
+
+	openIssues, err := issueCollection.CountDocuments(ctx, bson.M{
+		"status": bson.M{"$in": []string{"Pending", "In Progress"}},
+	})
+	if err != nil {
+		openIssues = 0
+	}
+
+	// Return analytics response
+	response := gin.H{
+		"issuesByCategory": issuesByCategory,
+		"last7Days":        last7Days,
+		"topVotedIssues":   topVotedIssues,
+		"totalIssues":      totalIssues,
+		"totalVotes":       totalVotes,
+		"openIssues":       openIssues,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// RecentIssues returns the most recent issues
+func RecentIssues(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	limit := 19
+
+	findOptions := options.Find().
+		SetSort(bson.D{{Key: "createdAt", Value: -1}}).
+		SetLimit(int64(limit))
+
+	cursor, err := issueCollection.Find(ctx, bson.M{}, findOptions)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve recent issues"})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var recentIssues []models.Issue
+	if err := cursor.All(ctx, &recentIssues); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode recent issues"})
+		return
+	}
+
+	c.JSON(http.StatusOK, recentIssues)
 }
