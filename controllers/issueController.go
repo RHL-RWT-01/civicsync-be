@@ -790,3 +790,29 @@ func GetIssueAnalytics(c *gin.Context) {
 
 	c.JSON(http.StatusOK, response)
 }
+
+// RecentIssues returns the most recent issues
+func RecentIssues(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	limit := 19
+
+	findOptions := options.Find().
+		SetSort(bson.D{{Key: "createdAt", Value: -1}}).
+		SetLimit(int64(limit))
+
+	cursor, err := issueCollection.Find(ctx, bson.M{}, findOptions)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve recent issues"})
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var recentIssues []models.Issue
+	if err := cursor.All(ctx, &recentIssues); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode recent issues"})
+		return
+	}
+
+	c.JSON(http.StatusOK, recentIssues)
+}
