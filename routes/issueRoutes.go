@@ -12,11 +12,12 @@ func IssueRoutes(r *gin.Engine) {
 	{
 		issue.POST("/create", middlewares.AuthMiddleware(), controllers.CreateIssue)
 		issue.GET("/:id", middlewares.AuthMiddleware(), controllers.GetIssue)
-		issue.GET("/issues", middlewares.AuthMiddleware(), controllers.GetAllIssues)
+		issue.GET("/issues", controllers.GetAllIssues)
 		issue.GET(("/user/:userId"), middlewares.AuthMiddleware(), controllers.GetIssuesByUser)
 		issue.PUT("/update/:id", middlewares.AuthMiddleware(), controllers.UpdateIssue)
 		issue.DELETE("/delete/:id", middlewares.AuthMiddleware(), controllers.DeleteIssue)
 		issue.POST("/vote/:id", middlewares.AuthMiddleware(), controllers.VoteOnIssue)
 		issue.DELETE("/vote/:id", middlewares.AuthMiddleware(), controllers.UnvoteOnIssue)
+		issue.GET("/analytics", controllers.GetIssueAnalytics)
 	}
 }
