@@ -19,6 +19,7 @@ func main() {
 	if db == nil {
 		log.Fatal("Failed to connect to MongoDB")
 	}
+	config.ConnectRedis()
 
 	log.Println("MongoDB connection established successfully!")
 
