@@ -643,12 +643,6 @@ func UnvoteOnIssue(c *gin.Context) {
 
 // GetIssueAnalytics returns analytical data about issues
 func GetIssueAnalytics(c *gin.Context) {
-	// Extract user ID from context (authentication required)
-	_, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
