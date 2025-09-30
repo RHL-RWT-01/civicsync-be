@@ -1,12 +1,15 @@
 package main
 
 import (
-	"log"
-	"net/http"
-
 	"civicsync-be/config"
 	"civicsync-be/routes"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"time"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -24,6 +27,17 @@ func main() {
 	log.Println("MongoDB connection established successfully!")
 
 	r := gin.Default()
+	var clientURL = os.Getenv("CLIENT_URL")
+	fmt.Println("Client URL:", clientURL)
+	// Use CORS middleware
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{clientURL}, // frontend URL
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
 
 	routes.AuthRoutes(r)
 	routes.IssueRoutes(r)
