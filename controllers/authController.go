@@ -106,17 +106,26 @@ func LoginUser(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Something went wrong"})
 		return
 	}
+	cookie := &http.Cookie{
+		Name:     "auth_token",
+		Value:    token,
+		MaxAge:   3600, // 1 hour
+		Path:     "/",
+		Domain:   "localhost",          // must match frontend host
+		Secure:   false,                // false for HTTP (dev), true for HTTPS (prod)
+		HttpOnly: true,                 // still protect from JS access
+		SameSite: http.SameSiteLaxMode, // prevents CSRF for most cases
+	}
+	http.SetCookie(c.Writer, cookie)
 
 	c.JSON(http.StatusOK, gin.H{
-		"token": token,
-		"user": gin.H{
-			"id":        user.ID,
-			"name":      user.Name,
-			"email":     user.Email,
-			"createdAt": user.CreatedAt,
-		},
+		"id":        user.ID,
+		"name":      user.Name,
+		"email":     user.Email,
+		"createdAt": user.CreatedAt,
 	})
 }
+
 // GetMe retrieves the authenticated user's information
 func GetMe(c *gin.Context) {
 	userID, exists := c.Get("user_id")
@@ -147,5 +156,13 @@ func GetMe(c *gin.Context) {
 		"name":      user.Name,
 		"email":     user.Email,
 		"createdAt": user.CreatedAt,
+	})
+}
+
+// LogoutUser handles user logout by clearing the auth_token cookie
+func LogoutUser(c *gin.Context) {
+	c.SetCookie("auth_token", "", -1, "/", "localhost", false, true)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Logged out successfully",
 	})
 }
