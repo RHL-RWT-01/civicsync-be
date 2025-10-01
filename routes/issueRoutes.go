@@ -15,7 +15,7 @@ func IssueRoutes(r *gin.Engine) {
 		issue.GET("/:id", controllers.GetIssue)
 		issue.GET("/issues", controllers.GetAllIssues)
 		issue.GET("/user", middlewares.AuthMiddleware(), controllers.GetIssuesByUser)
-		issue.PUT("/update/:id", middlewares.AuthMiddleware(), controllers.UpdateIssue)
+		issue.PATCH("/update/:id", middlewares.AuthMiddleware(), controllers.UpdateIssue)
 		issue.DELETE("/delete/:id", middlewares.AuthMiddleware(), controllers.DeleteIssue)
 		issue.POST("/vote/:id", middlewares.AuthMiddleware(), controllers.HandleVoteOnIssue)
 		issue.GET("/analytics", controllers.GetIssueAnalytics)

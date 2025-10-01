@@ -640,7 +640,19 @@ func HandleVoteOnIssue(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove vote"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "Vote removed successfully", "voted": false})
+
+		// Get updated vote count
+		updatedVoteCount, err := voteCollection.CountDocuments(ctx, bson.M{"issue": issueID})
+		if err != nil {
+			updatedVoteCount = 0
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message":      "Vote removed successfully",
+			"voted":        false,
+			"votes":        updatedVoteCount,
+			"userHasVoted": false,
+		})
 	} else {
 		// User hasn't voted, create a new vote
 		vote := models.Vote{
@@ -655,7 +667,19 @@ func HandleVoteOnIssue(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to cast vote"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "Vote cast successfully", "voted": true})
+
+		// Get updated vote count
+		updatedVoteCount, err := voteCollection.CountDocuments(ctx, bson.M{"issue": issueID})
+		if err != nil {
+			updatedVoteCount = 1 // At least the vote we just added
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message":      "Vote cast successfully",
+			"voted":        true,
+			"votes":        updatedVoteCount,
+			"userHasVoted": true,
+		})
 	}
 }
 
