@@ -785,28 +785,81 @@ func GetIssueAnalytics(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// RecentIssues returns the most recent issues
+// RecentIssues returns the most recent issues that have latitude and longitude
 func RecentIssues(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	limit := 19
 
+	// Filter for issues that have both latitude and longitude
+	filter := bson.M{
+		"latitude":  bson.M{"$exists": true, "$ne": nil},
+		"longitude": bson.M{"$exists": true, "$ne": nil},
+	}
+
+	// Project only the required fields
+	projection := bson.M{
+		"_id":       1,
+		"title":     1,
+		"latitude":  1,
+		"longitude": 1,
+		"location":  1,
+		"category":  1,
+		"createdAt": 1,
+	}
+
 	findOptions := options.Find().
 		SetSort(bson.D{{Key: "createdAt", Value: -1}}).
-		SetLimit(int64(limit))
+		SetLimit(int64(limit)).
+		SetProjection(projection)
 
-	cursor, err := issueCollection.Find(ctx, bson.M{}, findOptions)
+	cursor, err := issueCollection.Find(ctx, filter, findOptions)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve recent issues"})
 		return
 	}
-	defer cursor.Close(ctx)
+	// Define a minimal struct for the projected data
+	type IssueProjection struct {
+		ID        primitive.ObjectID `bson:"_id" json:"id"`
+		Title     string             `bson:"title" json:"title"`
+		Latitude  *float64           `bson:"latitude" json:"latitude"`
+		Longitude *float64           `bson:"longitude" json:"longitude"`
+		Location  string             `bson:"location" json:"location"`
+		Category  string             `bson:"category" json:"category"`
+		CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
+	}
 
-	var recentIssues []models.Issue
-	if err := cursor.All(ctx, &recentIssues); err != nil {
+	var issues []IssueProjection
+	if err := cursor.All(ctx, &issues); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode recent issues"})
 		return
 	}
 
-	c.JSON(http.StatusOK, recentIssues)
+	// Transform to the required Issue type format
+	type IssueResponse struct {
+		ID        string    `json:"id"`
+		Title     string    `json:"title"`
+		Latitude  float64   `json:"latitude"`
+		Longitude float64   `json:"longitude"`
+		Location  string    `json:"location"`
+		Category  string    `json:"category,omitempty"`
+		CreatedAt time.Time `json:"createdAt,omitempty"`
+	}
+
+	var response []IssueResponse
+	for _, issue := range issues {
+		if issue.Latitude != nil && issue.Longitude != nil {
+			response = append(response, IssueResponse{
+				ID:        issue.ID.Hex(),
+				Title:     issue.Title,
+				Latitude:  *issue.Latitude,
+				Longitude: *issue.Longitude,
+				Location:  issue.Location,
+				Category:  issue.Category,
+				CreatedAt: issue.CreatedAt,
+			})
+		}
+	}
+
+	c.JSON(http.StatusOK, response)
 }
