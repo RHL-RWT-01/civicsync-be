@@ -7,22 +7,17 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 )
+
 // AuthMiddleware validates JWT tokens and protects routes
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		authHeader := c.Request.Header.Get("Authorization")
-		if authHeader == "" {
+		// Get token from cookie
+		tokenString, err := c.Cookie("auth_token")
+		if err != nil || tokenString == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "No authorization token provided"})
 			c.Abort()
 			return
-		}
-
-		// Extracting token from "Bearer <token>" format
-		tokenString := authHeader
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			tokenString = authHeader[7:]
 		}
 
 		jwtSecret := os.Getenv("JWT_SECRET")

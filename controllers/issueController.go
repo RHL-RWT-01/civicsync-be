@@ -329,8 +329,15 @@ func GetIssue(c *gin.Context) {
 
 // GetIssuesByUser retrieves all issues created by a specific user
 func GetIssuesByUser(c *gin.Context) {
-	userIdParam := c.Param("userId")
-	userID, err := primitive.ObjectIDFromHex(userIdParam)
+	// Extract user ID from context (set by auth middleware)
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// Convert user ID to ObjectID
+	userObjID, err := primitive.ObjectIDFromHex(userID.(string))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
 		return
@@ -340,7 +347,7 @@ func GetIssuesByUser(c *gin.Context) {
 	defer cancel()
 
 	// Find issues created by the specified user
-	cursor, err := issueCollection.Find(ctx, bson.M{"createdBy": userID})
+	cursor, err := issueCollection.Find(ctx, bson.M{"createdBy": userObjID})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve issues"})
 		return
@@ -353,6 +360,9 @@ func GetIssuesByUser(c *gin.Context) {
 		return
 	}
 
+	// Get current user ID for vote checking
+	currentUserID := &userObjID
+
 	// Enhance issues with vote counts and user vote status
 	type IssueWithVotes struct {
 		models.Issue
@@ -362,6 +372,46 @@ func GetIssuesByUser(c *gin.Context) {
 	}
 
 	issuesWithVotes := make([]IssueWithVotes, 0, len(issues))
+
+	for _, issue := range issues {
+		// Count votes for this issue
+		voteCount, err := voteCollection.CountDocuments(ctx, bson.M{"issue": issue.ID})
+		if err != nil {
+			voteCount = 0
+		}
+
+		// Check if current user has voted
+		userHasVoted := false
+		if currentUserID != nil {
+			count, err := voteCollection.CountDocuments(ctx, bson.M{
+				"issue": issue.ID,
+				"user":  *currentUserID,
+			})
+			if err == nil && count > 0 {
+				userHasVoted = true
+			}
+		}
+
+		// Get creator info
+		var creator models.User
+		createdByMap := map[string]interface{}{
+			"id": issue.CreatedBy,
+		}
+
+		if err := userCollection.FindOne(ctx, bson.M{"_id": issue.CreatedBy}).Decode(&creator); err == nil {
+			createdByMap["name"] = creator.Name
+			createdByMap["email"] = creator.Email
+		}
+
+		issueWithVotes := IssueWithVotes{
+			Issue:        issue,
+			Votes:        voteCount,
+			UserHasVoted: userHasVoted,
+			CreatedBy:    createdByMap,
+		}
+
+		issuesWithVotes = append(issuesWithVotes, issueWithVotes)
+	}
 
 	c.JSON(http.StatusOK, issuesWithVotes)
 }
@@ -532,8 +582,8 @@ func DeleteIssue(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Issue deleted successfully"})
 }
 
-// voteOnIssue allows a user to vote on an issue
-func VoteOnIssue(c *gin.Context) {
+// HandleVoteOnIssue toggles the user's vote on an issue (vote if not voted, unvote if already voted)
+func HandleVoteOnIssue(c *gin.Context) {
 	idParam := c.Param("id")
 	issueID, err := primitive.ObjectIDFromHex(idParam)
 	if err != nil {
@@ -579,66 +629,58 @@ func VoteOnIssue(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check existing votes"})
 		return
 	}
+
 	if count > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "User has already voted on this issue"})
-		return
+		// User has already voted, remove the vote
+		_, err = voteCollection.DeleteOne(ctx, bson.M{
+			"issue": issueID,
+			"user":  userObjID,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove vote"})
+			return
+		}
+
+		// Get updated vote count
+		updatedVoteCount, err := voteCollection.CountDocuments(ctx, bson.M{"issue": issueID})
+		if err != nil {
+			updatedVoteCount = 0
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message":      "Vote removed successfully",
+			"voted":        false,
+			"votes":        updatedVoteCount,
+			"userHasVoted": false,
+		})
+	} else {
+		// User hasn't voted, create a new vote
+		vote := models.Vote{
+			ID:        primitive.NewObjectID(),
+			Issue:     issueID,
+			User:      userObjID,
+			CreatedAt: time.Now(),
+		}
+
+		_, err = voteCollection.InsertOne(ctx, vote)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to cast vote"})
+			return
+		}
+
+		// Get updated vote count
+		updatedVoteCount, err := voteCollection.CountDocuments(ctx, bson.M{"issue": issueID})
+		if err != nil {
+			updatedVoteCount = 1 // At least the vote we just added
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message":      "Vote cast successfully",
+			"voted":        true,
+			"votes":        updatedVoteCount,
+			"userHasVoted": true,
+		})
 	}
-
-	// Create a new vote
-	vote := models.Vote{
-		ID:        primitive.NewObjectID(),
-		Issue:     issueID,
-		User:      userObjID,
-		CreatedAt: time.Now(),
-	}
-
-	// Insert the vote into the database
-	_, err = voteCollection.InsertOne(ctx, vote)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to cast vote"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Vote cast successfully"})
-}
-
-// UnvoteOnIssue allows a user to remove their vote from an issue
-func UnvoteOnIssue(c *gin.Context) {
-	idParam := c.Param("id")
-	issueID, err := primitive.ObjectIDFromHex(idParam)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid issue ID"})
-		return
-	}
-
-	// Extract user ID from context (set by auth middleware)
-	userID, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
-		return
-	}
-
-	// Convert user ID to ObjectID
-	userObjID, err := primitive.ObjectIDFromHex(userID.(string))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Delete the vote from the database
-	_, err = voteCollection.DeleteOne(ctx, bson.M{
-		"issue": issueID,
-		"user":  userObjID,
-	})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove vote"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Vote removed successfully"})
 }
 
 // GetIssueAnalytics returns analytical data about issues
@@ -785,28 +827,81 @@ func GetIssueAnalytics(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// RecentIssues returns the most recent issues
+// RecentIssues returns the most recent issues that have latitude and longitude
 func RecentIssues(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	limit := 19
 
+	// Filter for issues that have both latitude and longitude
+	filter := bson.M{
+		"latitude":  bson.M{"$exists": true, "$ne": nil},
+		"longitude": bson.M{"$exists": true, "$ne": nil},
+	}
+
+	// Project only the required fields
+	projection := bson.M{
+		"_id":       1,
+		"title":     1,
+		"latitude":  1,
+		"longitude": 1,
+		"location":  1,
+		"category":  1,
+		"createdAt": 1,
+	}
+
 	findOptions := options.Find().
 		SetSort(bson.D{{Key: "createdAt", Value: -1}}).
-		SetLimit(int64(limit))
+		SetLimit(int64(limit)).
+		SetProjection(projection)
 
-	cursor, err := issueCollection.Find(ctx, bson.M{}, findOptions)
+	cursor, err := issueCollection.Find(ctx, filter, findOptions)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve recent issues"})
 		return
 	}
-	defer cursor.Close(ctx)
+	// Define a minimal struct for the projected data
+	type IssueProjection struct {
+		ID        primitive.ObjectID `bson:"_id" json:"id"`
+		Title     string             `bson:"title" json:"title"`
+		Latitude  *float64           `bson:"latitude" json:"latitude"`
+		Longitude *float64           `bson:"longitude" json:"longitude"`
+		Location  string             `bson:"location" json:"location"`
+		Category  string             `bson:"category" json:"category"`
+		CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
+	}
 
-	var recentIssues []models.Issue
-	if err := cursor.All(ctx, &recentIssues); err != nil {
+	var issues []IssueProjection
+	if err := cursor.All(ctx, &issues); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode recent issues"})
 		return
 	}
 
-	c.JSON(http.StatusOK, recentIssues)
+	// Transform to the required Issue type format
+	type IssueResponse struct {
+		ID        string    `json:"id"`
+		Title     string    `json:"title"`
+		Latitude  float64   `json:"latitude"`
+		Longitude float64   `json:"longitude"`
+		Location  string    `json:"location"`
+		Category  string    `json:"category,omitempty"`
+		CreatedAt time.Time `json:"createdAt,omitempty"`
+	}
+
+	var response []IssueResponse
+	for _, issue := range issues {
+		if issue.Latitude != nil && issue.Longitude != nil {
+			response = append(response, IssueResponse{
+				ID:        issue.ID.Hex(),
+				Title:     issue.Title,
+				Latitude:  *issue.Latitude,
+				Longitude: *issue.Longitude,
+				Location:  issue.Location,
+				Category:  issue.Category,
+				CreatedAt: issue.CreatedAt,
+			})
+		}
+	}
+
+	c.JSON(http.StatusOK, response)
 }

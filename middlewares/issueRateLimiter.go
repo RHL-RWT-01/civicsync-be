@@ -2,38 +2,59 @@ package middlewares
 
 import (
 	"net/http"
+	"os"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"civicsync-be/config"
+
+	"github.com/gin-gonic/gin"
 )
 
-func IssueRateLimiter(limit int, window time.Duration) gin.HandlerFunc {
+func IssueRateLimiter(limit int) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userID := c.GetHeader("user_id")
-		
-		key := "rate_limit:" + userID
-		ctx := config.Ctx
-
-		// Increment request count
-		count, err := config.RedisClient.Incr(ctx, key).Result()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error"})
+		userIDVal, _ := c.Get("user_id")
+		userID, ok := userIDVal.(string)
+		if !ok || userID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "user_id cookie missing"})
 			c.Abort()
 			return
 		}
 
-		// If first request, set TTL
-		if count == 1 {
-			config.RedisClient.Expire(ctx, key, window)
+		ctx := config.Ctx
+		queuePrefix := os.Getenv("REDIS_QUEUE_FOR_ISSUE_LIMIT")
+		if queuePrefix == "" {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Redis queue not configured"})
+			c.Abort()
+			return
 		}
 
-		// Block if exceeded limit
+		// Create individual key for each user
+		userKey := queuePrefix + ":" + userID
+
+		// Increment user's count with TTL
+		count, err := config.RedisClient.Incr(ctx, userKey).Result()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error incrementing count"})
+			c.Abort()
+			return
+		}
+
+		// Set TTL only for the first increment (when count = 1)
+		if count == 1 {
+			err = config.RedisClient.Expire(ctx, userKey, 24*time.Hour).Err()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error setting TTL"})
+				c.Abort()
+				return
+			}
+		}
+
+		// Check if user exceeded limit
 		if count > int64(limit) {
-			ttl, _ := config.RedisClient.TTL(ctx, key).Result()
+			retryAfter, _ := config.RedisClient.TTL(ctx, userKey).Result()
 			c.JSON(http.StatusTooManyRequests, gin.H{
 				"error":       "rate limit exceeded",
-				"retry_after": ttl.Seconds(),
+				"retry_after": retryAfter.Seconds(),
 			})
 			c.Abort()
 			return
