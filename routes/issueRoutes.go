@@ -3,6 +3,7 @@ package routes
 import (
 	"civicsync-be/controllers"
 	"civicsync-be/middlewares"
+
 	"github.com/gin-gonic/gin"
 )
 

@@ -8,7 +8,7 @@ import (
 
 	"civicsync-be/config"
 	"civicsync-be/models"
-	authUtils "civicsync-be/utils/auth"
+	authUtils "civicsync-be/utils"
 
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson"
