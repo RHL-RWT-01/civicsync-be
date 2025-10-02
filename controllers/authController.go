@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"time"
+	"os"
 
 	"civicsync-be/config"
 	"civicsync-be/models"
@@ -106,15 +107,17 @@ func LoginUser(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Something went wrong"})
 		return
 	}
+	environment := os.Getenv("GO_ENV")
+	domain := os.Getenv("DOMAIN")
 	cookie := &http.Cookie{
 		Name:     "auth_token",
 		Value:    token,
 		MaxAge:   3600, // 1 hour
 		Path:     "/",
-		Domain:   "localhost",          // must match frontend host
-		Secure:   false,                // false for HTTP (dev), true for HTTPS (prod)
-		HttpOnly: true,                 // still protect from JS access
-		SameSite: http.SameSiteLaxMode, // prevents CSRF for most cases
+		Domain:   domain,                 // must match frontend host
+		Secure:   environment == "production", // false for HTTP (dev), true for HTTPS (prod)
+		HttpOnly: true,                        // still protect from JS access
+		SameSite: http.SameSiteLaxMode,        // prevents CSRF for most cases
 	}
 	http.SetCookie(c.Writer, cookie)
 
