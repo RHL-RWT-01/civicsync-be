@@ -3,7 +3,6 @@ package routes
 import (
 	"civicsync-be/controllers"
 	"civicsync-be/middlewares"
-	"time"
 	"github.com/gin-gonic/gin"
 )
 
@@ -11,7 +10,7 @@ import (
 func IssueRoutes(r *gin.Engine) {
 	issue := r.Group("/api/issue")
 	{
-		issue.POST("/create", middlewares.AuthMiddleware(), middlewares.IssueRateLimiter(2, time.Hour*24), controllers.CreateIssue)
+		issue.POST("/create", middlewares.AuthMiddleware(), middlewares.IssueRateLimiter(2), controllers.CreateIssue)
 		issue.GET("/:id", controllers.GetIssue)
 		issue.GET("/issues", controllers.GetAllIssues)
 		issue.GET("/user", middlewares.AuthMiddleware(), controllers.GetIssuesByUser)
