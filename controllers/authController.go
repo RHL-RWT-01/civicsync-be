@@ -4,8 +4,8 @@ import (
 	"context"
 	"log"
 	"net/http"
-	"time"
 	"os"
+	"time"
 
 	"civicsync-be/config"
 	"civicsync-be/models"
@@ -109,15 +109,21 @@ func LoginUser(c *gin.Context) {
 	}
 	environment := os.Getenv("GO_ENV")
 	domain := os.Getenv("DOMAIN")
+
+	// For production, don't set domain to allow cross-origin cookies
+	if environment == "production" {
+		domain = ""
+	}
+
 	cookie := &http.Cookie{
 		Name:     "auth_token",
 		Value:    token,
 		MaxAge:   3600, // 1 hour
 		Path:     "/",
-		Domain:   domain,                 // must match frontend host
+		Domain:   domain,
 		Secure:   environment == "production", // false for HTTP (dev), true for HTTPS (prod)
 		HttpOnly: true,                        // still protect from JS access
-		SameSite: http.SameSiteLaxMode,        // prevents CSRF for most cases
+		SameSite: http.SameSiteNoneMode,       // Required for cross-origin cookies in production
 	}
 	http.SetCookie(c.Writer, cookie)
 
@@ -164,7 +170,10 @@ func GetMe(c *gin.Context) {
 
 // LogoutUser handles user logout by clearing the auth_token cookie
 func LogoutUser(c *gin.Context) {
-	c.SetCookie("auth_token", "", -1, "/", "localhost", false, true)
+	environment := os.Getenv("GO_ENV")
+	domain := os.Getenv("DOMAIN")
+
+	c.SetCookie("auth_token", "", -1, "/", domain, environment == "production", true)
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Logged out successfully",
 	})
